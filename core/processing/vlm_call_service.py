@@ -31,6 +31,14 @@ class VLMCallService:
         )
         self._cached_framework_vlm_id: str | None = None
 
+    def update_config(self, vision_provider_id=None) -> None:
+        """同步运行期配置。"""
+        if vision_provider_id is not None:
+            next_provider_id = str(vision_provider_id or "").strip()
+            if next_provider_id != self.vision_provider_id:
+                self.vision_provider_id = next_provider_id
+                self._cached_framework_vlm_id = None
+
     async def _resolve_vision_provider(self, event=None) -> str | None:
         """统一的视觉模型 provider 解析逻辑。
 
@@ -69,7 +77,11 @@ class VLMCallService:
         return None
 
     async def _call_vision_model(
-        self, event: AstrMessageEvent | None, img_path: str, prompt: str
+        self,
+        event: AstrMessageEvent | None,
+        img_path: str,
+        prompt: str,
+        provider_id: str | None = None,
     ) -> str:
         """调用视觉模型分析图片。
 
@@ -80,6 +92,7 @@ class VLMCallService:
             event: 消息事件（用于 provider 解析）
             img_path: 图片绝对路径（调用方需保证已验证）
             prompt: 提示词
+            provider_id: 本次调用指定的视觉模型 provider；为空则使用配置解析结果
 
         Returns:
             str: 模型响应文本
@@ -102,8 +115,10 @@ class VLMCallService:
             raise FileNotFoundError(f"图片文件不存在: {img_path}")
 
         # 解析 provider
-        provider_id = await self._resolve_vision_provider(event)
-        if not provider_id:
+        resolved_provider_id = str(provider_id or "").strip()
+        if not resolved_provider_id:
+            resolved_provider_id = await self._resolve_vision_provider(event) or ""
+        if not resolved_provider_id:
             raise ValueError(
                 "未配置视觉模型(vision_provider_id)，无法进行图片分析。"
                 "请在插件配置或 AstrBot 全局配置中设置。"
@@ -130,7 +145,9 @@ class VLMCallService:
                 )
                 actual_prompt = animated_prefix + prompt
 
-            return await self._do_vlm_call(provider_id, actual_prompt, resolved_img_path)
+            return await self._do_vlm_call(
+                resolved_provider_id, actual_prompt, resolved_img_path
+            )
         finally:
             # 清理临时文件
             if temp_file and os.path.exists(temp_file):

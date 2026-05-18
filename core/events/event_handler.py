@@ -95,6 +95,19 @@ class EventHandler:
         return await self._image_download_service.download_url_to_temp(url)
 
     # ===== EventHandler 核心逻辑 =====
+
+    def _stop_event_if_possible(self, event: AstrMessageEvent, reason: str) -> None:
+        """终止当前消息继续进入后续 LLM 流程。"""
+        stop_event = getattr(event, "stop_event", None)
+        if not callable(stop_event):
+            logger.debug(f"当前事件不支持 stop_event，无法终止后续流程: {reason}")
+            return
+        try:
+            stop_event()
+            logger.debug(f"已终止表情包偷取事件后续流程: {reason}")
+        except Exception as e:
+            logger.debug(f"终止表情包偷取事件失败: {e}")
+
     def _should_process_image(self) -> bool:
         """根据偷图模式（概率/冷却）判断是否应该处理图片。
 
@@ -375,6 +388,7 @@ class EventHandler:
         if not imgs and not store_urls:
             return
         if force_active:
+            self._stop_event_if_possible(event, "强制收录表情包")
             await self._handle_force_capture(event, plugin_instance, imgs, store_urls)
             return
         if not self._should_process_image():
@@ -463,6 +477,8 @@ class EventHandler:
                 imgs_to_process.append((i, img, extra_meta or {}))
             except Exception as e:
                 logger.error(f"收集图片信息失败: {e}")
+        if imgs_to_process or store_urls:
+            self._stop_event_if_possible(event, "检测到表情包并准备偷取")
         if imgs_to_process:
             logger.debug(f"开始并行下载 {len(imgs_to_process)} 张图片")
             download_results = await asyncio.gather(

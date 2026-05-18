@@ -254,6 +254,7 @@ class ImageProcessorService:
             emoji_classification_prompt=emoji_classification_prompt,
             emoji_classification_with_filter_prompt=emoji_classification_with_filter_prompt,
         )
+        self._vlm_call_service.update_config(vision_provider_id=vision_provider_id)
 
     async def _store_and_index_image(
         self,
@@ -735,6 +736,7 @@ class ImageProcessorService:
         file_path: str,
         categories=None,
         content_filtration=None,
+        provider_id: str | None = None,
     ) -> tuple[str, list[str], str, str, list[str]]:
         """使用视觉模型对图片进行分类并返回详细信息。
 
@@ -743,6 +745,7 @@ class ImageProcessorService:
             file_path: 图片绝对路径
             categories: 分类列表（可选，默认使用 self.categories）
             content_filtration: 是否进行内容过滤（可选，默认使用 self.content_filtration）
+            provider_id: 本次分类指定的视觉模型 provider；为空则使用默认视觉模型
 
         Returns:
             tuple: (category, tags, desc, emotion, scenes)
@@ -768,7 +771,9 @@ class ImageProcessorService:
             )
 
             # 调用视觉模型
-            response = await self._call_vision_model(event, file_path, prompt)
+            response = await self._call_vision_model(
+                event, file_path, prompt, provider_id=provider_id
+            )
 
             # 解析JSON响应
             return self._parse_classification_response(response, file_path)
@@ -839,9 +844,13 @@ class ImageProcessorService:
 
     # ===== 门面委托：VLMCallService =====
 
-    async def _call_vision_model(self, event, img_path: str, prompt: str):
+    async def _call_vision_model(
+        self, event, img_path: str, prompt: str, provider_id: str | None = None
+    ):
         """Call vision model（已迁移到 VLMCallService）。"""
-        return await self._vlm_call_service._call_vision_model(event, img_path, prompt)
+        return await self._vlm_call_service._call_vision_model(
+            event, img_path, prompt, provider_id=provider_id
+        )
 
     async def _prepare_image_for_vlm(self, img_path: str):
         """Prepare image for VLM（已迁移到 VLMCallService）。"""

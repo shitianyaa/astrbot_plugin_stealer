@@ -126,6 +126,50 @@ class PluginAPI:
                 keys.append(key)
         return keys
 
+    def _get_batch_vision_provider_ids(self) -> list[str]:
+        """返回 WebUI 批量自动识别可用的 provider 列表，最多 3 个。"""
+        cfg = getattr(self.plugin, "plugin_config", None)
+        raw_items: list[Any] = []
+        primary = str(getattr(cfg, "vision_provider_id", "") or "").strip() if cfg else ""
+        if primary:
+            raw_items.append(primary)
+
+        raw_items.extend(
+            [
+                getattr(cfg, "batch_vision_provider_id_1", "") if cfg else "",
+                getattr(cfg, "batch_vision_provider_id_2", "") if cfg else "",
+            ]
+        )
+
+        # 兼容旧版手填列表配置；新版 WebUI 使用上面两个 select_provider 字段。
+        extra = getattr(cfg, "batch_vision_provider_ids", []) if cfg else []
+        if isinstance(extra, str):
+            raw_items.extend(
+                extra.replace("，", ",").replace("、", ",").replace(";", ",").split(",")
+            )
+        elif isinstance(extra, list):
+            raw_items.extend(extra)
+
+        seen: set[str] = set()
+        providers: list[str] = []
+        for item in raw_items:
+            provider_id = str(item or "").strip()
+            if provider_id and provider_id not in seen:
+                seen.add(provider_id)
+                providers.append(provider_id)
+            if len(providers) >= 3:
+                break
+        return providers
+
+    def _get_batch_vision_concurrency(self, provider_count: int) -> int:
+        if provider_count <= 0:
+            return 1
+        try:
+            configured = int(getattr(self._cfg, "batch_vision_concurrency", 3) or 3)
+        except (TypeError, ValueError):
+            configured = 3
+        return max(1, min(configured, provider_count, 3))
+
     def _file_base64(self, file_path: str) -> str:
         with open(file_path, "rb") as f:
             raw = f.read()
@@ -646,6 +690,8 @@ class PluginAPI:
             if not fallback:
                 return jsonify({"success": False, "error": "未配置任何分类"})
 
+            provider_ids = self._get_batch_vision_provider_ids() if auto_analyze else []
+            concurrency = self._get_batch_vision_concurrency(len(provider_ids))
             task_id = str(uuid.uuid4())
             self.batch_upload_tasks[task_id] = {
                 "status": "processing",
@@ -654,9 +700,19 @@ class PluginAPI:
                 "success": 0,
                 "failed": 0,
                 "results": [],
+                "providers": provider_ids,
+                "concurrency": concurrency,
             }
             asyncio.create_task(
-                self._process_batch(task_id, files_data, category, auto_analyze, fallback)
+                self._process_batch(
+                    task_id,
+                    files_data,
+                    category,
+                    auto_analyze,
+                    fallback,
+                    provider_ids,
+                    concurrency,
+                )
             )
             return jsonify({"success": True, "task_id": task_id, "total": len(files_data)})
         except Exception as e:
@@ -664,38 +720,65 @@ class PluginAPI:
             return jsonify({"success": False, "error": str(e)})
 
     async def _process_batch(
-        self, task_id: str, files_data: list[dict], category: str, auto_analyze: bool, fallback: str
+        self,
+        task_id: str,
+        files_data: list[dict],
+        category: str,
+        auto_analyze: bool,
+        fallback: str,
+        provider_ids: list[str] | None = None,
+        concurrency: int = 1,
     ) -> None:
         try:
             task = self.batch_upload_tasks.get(task_id)
             if not task:
                 return
-            for fd in files_data:
+
+            providers = list(provider_ids or [])
+            semaphore = asyncio.Semaphore(max(1, int(concurrency or 1)))
+            proc = getattr(self.plugin, "image_processor_service", None)
+
+            async def process_one(index: int, fd: dict) -> None:
+                provider_id = providers[index % len(providers)] if providers else None
+                provider_label = provider_id or "default"
+
                 try:
                     tags, desc, scenes = [], "", []
                     final_cat = category or fallback
                     if auto_analyze:
+                        tmp = None
                         try:
                             img_hash = fd["hash"]
-                            tmp = self._data_dir / "temp" / f"{img_hash}{fd['ext']}"
+                            tmp = (
+                                self._data_dir
+                                / "temp"
+                                / f"{task_id}_{index}_{img_hash[:12]}{fd['ext']}"
+                            )
                             tmp.parent.mkdir(parents=True, exist_ok=True)
                             await asyncio.to_thread(lambda: tmp.write_bytes(fd["content"]))
-                            proc = self.plugin.image_processor_service
                             if proc:
                                 rc, rt, rd, _, rs = await proc.classify_image(
                                     event=None,
                                     file_path=str(tmp),
                                     categories=list(self._cfg.categories or []),
                                     content_filtration=False,
+                                    provider_id=provider_id,
                                 )
                                 if rc and rc != getattr(proc, "CATEGORY_FILTERED", None):
                                     final_cat = rc
                                     tags = rt or []
                                     desc = rd or ""
                                     scenes = rs or []
-                            await asyncio.to_thread(lambda: tmp.unlink() if tmp.exists() else None)
                         except Exception as e:
-                            logger.warning(f"自动分析失败: {e}")
+                            logger.warning(
+                                f"自动分析失败: file={fd['filename']}, "
+                                f"provider={provider_label}, error={e}"
+                            )
+                        finally:
+                            if tmp is not None:
+                                await asyncio.to_thread(
+                                    lambda: tmp.unlink() if tmp.exists() else None
+                                )
 
                     img = await self._persist_image(
                         file_content=fd["content"],
@@ -707,7 +790,12 @@ class PluginAPI:
                         scenes=scenes,
                     )
                     task["results"].append(
-                        {"hash": img["hash"], "category": img["category"], "success": True}
+                        {
+                            "hash": img["hash"],
+                            "category": img["category"],
+                            "provider": provider_label if auto_analyze else "",
+                            "success": True,
+                        }
                     )
                     task["success"] += 1
                 except Exception as e:
@@ -716,7 +804,16 @@ class PluginAPI:
                         {"filename": fd["filename"], "success": False, "error": str(e)}
                     )
                     task["failed"] += 1
-                task["processed"] += 1
+                finally:
+                    task["processed"] += 1
+
+            async def guarded_process(index: int, fd: dict) -> None:
+                async with semaphore:
+                    await process_one(index, fd)
+
+            await asyncio.gather(
+                *(guarded_process(index, fd) for index, fd in enumerate(files_data))
+            )
             await self._sync_index()
             task["status"] = "completed"
         except Exception as e:
@@ -741,6 +838,8 @@ class PluginAPI:
                 "processed": task["processed"],
                 "success_count": task["success"],
                 "failed_count": task["failed"],
+                "providers": task.get("providers", []),
+                "concurrency": task.get("concurrency", 1),
                 "error": task.get("error", ""),
                 "results": task.get("results", []),
             }

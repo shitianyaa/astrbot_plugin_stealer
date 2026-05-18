@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### added
+- WebUI 批量导入自动识别支持配置两个额外视觉模型，使用官方 `select_provider` 选择供应商，并与主视觉模型组成最多 3 个模型轮询分片并发识别。
+
+### fix
+- 自动偷取检测到表情包后终止当前消息后续事件流程，避免同一条表情包消息继续触发 LLM 工具调用并生成额外回复。
+
 ## [2.6.3] - 2026-05-11
 
 ### added

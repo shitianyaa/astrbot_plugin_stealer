@@ -140,6 +140,31 @@
     "hint": "留空则自动使用 AstrBot 全局配置的「图片描述模型」(default_image_caption_provider_id)",
     "_special": "select_provider"
   },
+  "batch_vision_provider_id_1": {
+    "description": "批量导入额外识别模型 1",
+    "type": "string",
+    "default": "",
+    "hint": "WebUI 批量导入启用自动识别时使用。会与上方「视觉模型」组成最多 3 个模型轮询分片并发识别；留空则不启用该额外模型。",
+    "_special": "select_provider"
+  },
+  "batch_vision_provider_id_2": {
+    "description": "批量导入额外识别模型 2",
+    "type": "string",
+    "default": "",
+    "hint": "WebUI 批量导入启用自动识别时使用。会与上方「视觉模型」和「额外识别模型 1」一起参与轮询分片；留空则不启用该额外模型。",
+    "_special": "select_provider"
+  },
+  "batch_vision_concurrency": {
+    "description": "批量导入识别并发数",
+    "type": "int",
+    "default": 3,
+    "slider": {
+      "min": 1,
+      "max": 3,
+      "step": 1
+    },
+    "hint": "WebUI 批量导入自动识别时最多同时处理的图片数。实际并发不会超过可用模型数量，建议 2-3。"
+  },
   "_group_section": {
     "description": "=== 目标过滤 ===",
     "type": "text",

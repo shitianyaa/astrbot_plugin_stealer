@@ -40,6 +40,10 @@ class PluginConfig(BaseModel):
 
     # === 模型配置 ===
     vision_provider_id: str = ""
+    batch_vision_provider_id_1: str = ""
+    batch_vision_provider_id_2: str = ""
+    batch_vision_provider_ids: list[str] = []
+    batch_vision_concurrency: int = 3
     napcat_token: str = ""  # NapCat 访问令牌
 
     # === WebUI 管理界面 ===
