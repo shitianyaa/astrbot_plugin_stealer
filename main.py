@@ -418,6 +418,37 @@ class Main(Star):
         text: self._emoji_sender_engine.update_result_with_cleaned_text_safe(event, result, text)
     )
 
+    def _is_explicit_steal_request(self, event: AstrMessageEvent | None) -> bool:
+        """判断用户是否明确要求偷取/收录当前图片。"""
+        if event is None:
+            return False
+        try:
+            text = event.get_message_str() or ""
+        except Exception:
+            text = ""
+        text = text.strip().lower()
+        if not text:
+            return False
+        request_keywords = (
+            "偷一下",
+            "偷下",
+            "偷图",
+            "偷表情",
+            "偷这个",
+            "偷这张",
+            "收了",
+            "收一下",
+            "收下",
+            "收图",
+            "收表情",
+            "存一下",
+            "保存",
+            "入库",
+            "录入",
+            "加到表情",
+        )
+        return any(keyword in text for keyword in request_keywords)
+
     @filter.command_group("meme")
     def meme(self):
         """表情包管理指令"""
@@ -789,32 +820,57 @@ class Main(Star):
             image_ref(string): 图片 URL，从当前消息已有的 Image URL 中选择
         """
         image_ref = str(image_ref or "").strip()
+        explicit_request = self._is_explicit_steal_request(event)
 
         logger.info(f"[Tool] LLM 请求偷取: ref={image_ref[:80]}")
 
+        def silent_skip(reason: str):
+            logger.debug(f"[Tool] 后台自动偷取跳过: {reason}")
+            return "后台自动收录未完成；不要向用户提及这个结果，请继续正常回复。"
+
         try:
             if not self.steal_by_llm:
-                yield "偷取失败：LLM 自主偷取功能未开启，请先在插件配置中启用"
+                yield (
+                    "偷取失败：LLM 自主偷取功能未开启，请先在插件配置中启用"
+                    if explicit_request
+                    else silent_skip("LLM 自主偷取未开启")
+                )
                 return
 
             if not self.is_steal_enabled_for_event(event):
-                yield "偷取失败：当前群聊已禁用偷取功能"
+                yield (
+                    "偷取失败：当前群聊已禁用偷取功能"
+                    if explicit_request
+                    else silent_skip("当前会话禁用偷取")
+                )
                 return
 
             if not image_ref:
-                yield "偷取失败：缺少 image_ref 参数，请提供当前消息中的图片 URL"
+                yield (
+                    "偷取失败：缺少 image_ref 参数，请提供当前消息中的图片 URL"
+                    if explicit_request
+                    else silent_skip("缺少 image_ref")
+                )
                 return
 
             event_handler = self._get_event_handler(log_message="event_handler 未初始化，无法下载图片")
             if event_handler is None:
-                yield "偷取失败：内部服务未初始化"
+                yield (
+                    "偷取失败：内部服务未初始化"
+                    if explicit_request
+                    else silent_skip("event_handler 未初始化")
+                )
                 return
 
             # 下载图片
             if image_ref.startswith("http://") or image_ref.startswith("https://"):
                 temp_path, _is_gif = await event_handler._download_to_temp(image_ref, log_download=True)
                 if not temp_path or not os.path.exists(temp_path):
-                    yield f"偷取失败：无法下载图片 {image_ref[:100]}"
+                    yield (
+                        f"偷取失败：无法下载图片 {image_ref[:100]}"
+                        if explicit_request
+                        else silent_skip("无法下载图片")
+                    )
                     return
                 is_temp = True
             elif image_ref.startswith("file:///"):
@@ -828,7 +884,11 @@ class Main(Star):
                 is_temp = False
 
             if not os.path.exists(temp_path):
-                yield f"偷取失败：图片文件不存在: {temp_path}"
+                yield (
+                    f"偷取失败：图片文件不存在: {temp_path}"
+                    if explicit_request
+                    else silent_skip("图片文件不存在")
+                )
                 return
 
             # 记下入库存前已有的路径，之后 diff 找出 VLM 分析结果
@@ -842,7 +902,11 @@ class Main(Star):
             )
 
             if not success:
-                yield "偷取失败：VLM 分析未通过（可能已存在、内容不合适或无法识别为表情包）"
+                yield (
+                    "偷取失败：VLM 分析未通过（可能已存在、内容不合适或无法识别为表情包）"
+                    if explicit_request
+                    else silent_skip("VLM 分析未通过")
+                )
                 return
 
             if merged_idx:
@@ -858,20 +922,32 @@ class Main(Star):
                         scene_list = new_entry.get("scenes", [])
                         scenes_str = ", ".join(scene_list) if isinstance(scene_list, list) else str(scene_list)
                         yield (
-                            f"偷取成功！VLM 分析结果：\n"
-                            f"- 分类：{cat}\n"
-                            f"- 标签：{tags_str or '无'}\n"
-                            f"- 描述：{desc_text or '无'}\n"
-                            f"- 场景：{scenes_str or '无'}"
+                            (
+                                f"偷取成功！VLM 分析结果：\n"
+                                f"- 分类：{cat}\n"
+                                f"- 标签：{tags_str or '无'}\n"
+                                f"- 描述：{desc_text or '无'}\n"
+                                f"- 场景：{scenes_str or '无'}"
+                            )
+                            if explicit_request
+                            else "后台自动收录成功；不要主动向用户报告这个结果，请继续正常回复。"
                         )
                         return
-                yield "偷取成功！已通过 VLM 自动分析并入库"
+                yield (
+                    "偷取成功！已通过 VLM 自动分析并入库"
+                    if explicit_request
+                    else "后台自动收录成功；不要主动向用户报告这个结果，请继续正常回复。"
+                )
             else:
-                yield "偷取成功但索引更新失败"
+                yield (
+                    "偷取成功但索引更新失败"
+                    if explicit_request
+                    else silent_skip("索引更新失败")
+                )
 
         except Exception as e:
             logger.error(f"[Tool] 偷取表情包失败: {e}", exc_info=True)
-            yield f"偷取出错：{e}"
+            yield f"偷取出错：{e}" if explicit_request else silent_skip(str(e))
             return
 
     async def _save_index(self, idx: dict[str, Any]):
@@ -998,8 +1074,10 @@ class Main(Star):
                     steal_guidance += f"分类库存提示: {'; '.join(category_hint)}\n"
                 steal_guidance += """
 使用时机:
-1. 用户说"偷一下"/"收了这张图"时，直接调用 steal_sticker 偷取
-2. 你看到合适的表情包，尤其缺素材的分类，主动偷取补齐库存
+1. 用户说"偷一下"/"收了这张图"时，直接调用 steal_sticker 偷取，并根据工具结果正常回复用户
+2. 你看到合适的表情包，尤其缺素材的分类，可以主动调用 steal_sticker 补齐库存
+3. 如果是你主动后台偷取，成功或失败都不要主动告诉用户，继续按原对话正常回复
+4. 如果当前消息没有可用图片 URL，不要调用工具
 
 调用 steal_sticker 后会由 VLM 自动完成分类、标签、描述和场景分析，你无需自己打标。VLM 结果会返回给你，让你知道偷到了什么。
 """
