@@ -7,6 +7,7 @@ from typing import Any
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
+from astrbot.api.message_components import Plain
 
 
 class _EmojiTurnState:
@@ -342,9 +343,11 @@ class EmojiSenderEngine:
     ):
         """安全地更新结果中的清理后文本。"""
         try:
-            if hasattr(result, "cleaned_text"):
-                result.cleaned_text = cleaned_text
-            elif hasattr(result, "result"):
-                result.result = cleaned_text
+            if not hasattr(result, "chain"):
+                return
+            for comp in result.chain:
+                if isinstance(comp, Plain):
+                    comp.text = cleaned_text
+                    break
         except Exception as e:
             logger.debug(f"[EmojiSenderEngine] 更新结果文本失败: {e}")

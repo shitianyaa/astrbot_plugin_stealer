@@ -591,7 +591,7 @@ class Main(Star):
         使用建议：
         - 先判断你此刻最能代表自己的心情词（例如：开心、无语、尴尬、感谢）
         - 再用该心情词调用本工具搜索候选
-        - 若无结果，可换同义词再搜索（如“无语”->"dumb/尴尬"）
+        - 若无结果，可换同义词再搜索（如"无语"->"dumb/尴尬"）
 
         返回值：
         返回候选表情包列表，每个包含：
@@ -599,7 +599,7 @@ class Main(Star):
         - 分类：表情包的情绪分类
         - 描述：表情包的详细描述（这是你选择时的重要参考）
 
-        请先锁定“当前心情词”，再仔细阅读候选描述，选择最能代表你当前心情与语气的一张。
+        请先锁定"当前心情词"，再仔细阅读候选描述，选择最能代表你当前心情与语气的一张。
         """
         query = str(query or "").strip()
         logger.info(f"[Tool] LLM 搜索表情包: {query}")
@@ -699,7 +699,7 @@ class Main(Star):
     async def send_emoji_by_id(self, event: AstrMessageEvent, emoji_id: int):
         """发送你选择的表情包。必须先调用 search_emoji 获取候选列表。
 
-        选择原则：优先发送能代表你“当前心情词”的候选项。
+        选择原则：优先发送能代表你"当前心情词"的候选项。
 
         Args:
             emoji_id(number): 表情包编号（从 search_emoji 返回的列表中选择）
@@ -743,14 +743,6 @@ class Main(Star):
 
             if not self.emoji_selector.is_path_allowed_for_event(path, event):
                 yield "发送失败：该表情包被限制为仅来源群可发送，请选择其他表情包。"
-                return
-
-            if not await self._resolve_auto_emoji_turn_permission(event):
-                yield "发送失败：当前轮次未触发表情包发送条件"
-                return
-
-            if not self._claim_auto_emoji_turn(event):
-                yield "发送失败：当前轮次已经有表情包发送流程"
                 return
 
             logger.info(f"[Tool] 发送选中的表情包: {path} (emotion={emotion})")

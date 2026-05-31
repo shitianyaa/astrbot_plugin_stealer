@@ -63,13 +63,13 @@ class PHashDedupService:
                     hex_len = (size * size + 3) // 4  # 向上取整
                     return format(hash_int, f"0{hex_len}x")
             except Exception as e:
-                logger.debug(f"计算感知哈希失败: {e}")
+                logger.warning(f"计算感知哈希失败: {e}")
                 return ""
 
         try:
             return await asyncio.to_thread(_sync_phash, file_path)
         except Exception as e:
-            logger.debug(f"计算感知哈希失败: {e}")
+            logger.warning(f"计算感知哈希失败: {e}")
             return ""
 
     @staticmethod

@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.5] - 2026-06-01
+
+### fix
+- 修复 LLM 工具发送表情包被概率拦截（issue #66）：`send_emoji_by_id` 不再检查 `resolve_auto_emoji_turn_permission` 和 `claim_auto_emoji_turn`
+- 修复 `_update_result_with_cleaned_text_safe` 完全无效：`MessageEventResult` 没有 `cleaned_text` 和 `result` 属性，改为遍历 `chain` 修改 `Plain` 组件
+- 修复 `_compute_hash` 全文件读取导致大图片 OOM：改为 64KB 分块读取
+- 修复无效分类后临时文件泄漏：`_handle_classification_result` 中无效分类时立即清理文件
+
+### changed
+- pHash 计算失败日志级别 debug→warning，生产环境可见去重失败
+
 ## [2.6.4] - 2026-05-28
 
 ### fix

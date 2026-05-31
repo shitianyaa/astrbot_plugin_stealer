@@ -641,7 +641,9 @@ class ImageProcessorService:
             )
 
         # 无效分类
-        logger.warning(f"分类无效（{source}）: {category!r}，图片留在raw目录等待清理")
+        logger.warning(f"分类无效（{source}）: {category!r}，清理文件")
+        if os.path.exists(file_path):
+            await self.plugin._safe_remove_file(file_path)
         return False, None
 
     async def steal_image_direct(
@@ -870,7 +872,8 @@ class ImageProcessorService:
         def _sync_hash(fp: str) -> str:
             hasher = hashlib.sha256()
             with open(fp, "rb") as f:
-                hasher.update(f.read())
+                while chunk := f.read(65536):
+                    hasher.update(chunk)
             return hasher.hexdigest()
 
         try:
