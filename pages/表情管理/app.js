@@ -2,6 +2,38 @@ const { createApp, ref, reactive, onMounted, nextTick } = Vue;
 
 const PLACEHOLDER = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
 
+function createLRUCache(maxSize) {
+  const cache = new Map();
+  return {
+    get(key) {
+      if (!cache.has(key)) return null;
+      const value = cache.get(key);
+      cache.delete(key);
+      cache.set(key, value);
+      return value;
+    },
+    set(key, value) {
+      if (cache.has(key)) cache.delete(key);
+      else if (cache.size >= maxSize) {
+        const firstKey = cache.keys().next().value;
+        cache.delete(firstKey);
+      }
+      cache.set(key, value);
+    },
+    has(key) { return cache.has(key); },
+    clear() { cache.clear(); }
+  };
+}
+
+function hashToColor(hash) {
+  if (!hash) return '#1e2230';
+  const num = parseInt(hash.slice(0, 6), 16) || 0;
+  const h = num % 360;
+  const s = 20 + (num % 15);
+  const l = 15 + (num % 10);
+  return `hsl(${h}, ${s}%, ${l}%)`;
+}
+
 const TEMPLATE = /* html */ `
         <header class="codex-header">
             <div class="header-title">
@@ -29,6 +61,11 @@ const TEMPLATE = /* html */ `
                     <span class="stat-value">{{ stats.today || 0 }}</span>
                     <span class="stat-label">今日新增</span>
                 </div>
+            </div>
+
+            <div class="health-indicator" :class="healthStatus">
+              <span class="health-dot"></span>
+              <span class="health-text">{{ {ok:'正常',slow:'缓慢',error:'异常',unknown:'检测中'}[healthStatus] }}</span>
             </div>
 
             <button
@@ -67,6 +104,15 @@ const TEMPLATE = /* html */ `
             <aside class="sidebar">
                 <div class="sidebar-title">分类</div>
                 <div class="category-list">
+                    <div
+                        class="category-item favorite-category"
+                        :class="{ active: selectedCategory === '__favorite__' }"
+                        @click="selectedCategory = '__favorite__'; fetchImages(1)"
+                    >
+                        <span class="category-icon">⭐</span>
+                        <span class="category-name">收藏</span>
+                        <span class="category-count">{{ favoriteCount }}</span>
+                    </div>
                     <div
                         class="category-item"
                         :class="{ active: selectedCategory === '' }"
@@ -146,9 +192,11 @@ const TEMPLATE = /* html */ `
                     </div>
                 </div>
 
-                <div v-if="loading" class="loading-state">
-                    <div class="spinner"></div>
-                    <p style="color:var(--gold-primary);font-family:'Cinzel',serif;letter-spacing:0.1em">加载中...</p>
+                <div v-if="loading" class="skeleton-grid">
+                  <div v-for="n in pageSize" :key="n" class="skeleton-card">
+                    <div class="skeleton-image"></div>
+                    <div class="skeleton-text"></div>
+                  </div>
                 </div>
 
                 <div v-else-if="images.length === 0" class="empty-state">
@@ -173,8 +221,20 @@ const TEMPLATE = /* html */ `
                             </svg>
                         </div>
 
+                        <button
+                          class="favorite-btn"
+                          :class="{ active: img.is_favorite }"
+                          @click.stop="toggleFavorite(img)"
+                          :title="img.is_favorite ? '取消收藏' : '收藏'"
+                        >
+                          <svg viewBox="0 0 24 24">
+                            <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/>
+                          </svg>
+                        </button>
+
                         <div class="item-image">
-                            <img :src="imageDataUrls[img.hash] || PLACEHOLDER" loading="lazy" :alt="img.desc" :data-hash="img.hash">
+                            <div v-if="!imageDataUrls[img.hash]" class="image-placeholder" :style="{ backgroundColor: hashToColor(img.hash) }"></div>
+                            <img v-else :src="imageDataUrls[img.hash]" loading="lazy" :alt="img.desc" :data-hash="img.hash" class="fade-in">
                         </div>
 
                         <div class="item-info">
@@ -266,6 +326,24 @@ const TEMPLATE = /* html */ `
                                 <span class="stat-value">
                                     <span class="scope-pill" :class="previewItem?.scope_mode === 'local' ? 'local' : 'public'">{{ getScopeLabel(previewItem?.scope_mode) }}</span>
                                 </span>
+                            </div>
+                            <div class="stat-row">
+                                <span class="stat-name">使用次数</span>
+                                <span class="stat-value">{{ previewItem?.use_count || 0 }} 次</span>
+                            </div>
+                            <div class="stat-row">
+                                <span class="stat-name">最后使用</span>
+                                <span class="stat-value">{{ previewItem?.last_used_at ? formatDate(previewItem.last_used_at) : '从未使用' }}</span>
+                            </div>
+                            <div class="stat-row">
+                                <span class="stat-name">收藏</span>
+                                <button
+                                  class="favorite-toggle-btn"
+                                  :class="{ active: previewItem?.is_favorite }"
+                                  @click="toggleFavorite(previewItem)"
+                                >
+                                  {{ previewItem?.is_favorite ? '⭐ 已收藏' : '☆ 未收藏' }}
+                                </button>
                             </div>
                             <div class="stat-row">
                                 <span class="stat-name">来源</span>
@@ -762,6 +840,15 @@ const TEMPLATE = /* html */ `
             <button @click="openBatchMoveModal" class="codex-btn" style="font-size:0.8rem;padding:8px 16px">移动</button>
             <button @click="handleBatchDelete" class="codex-btn danger" style="font-size:0.8rem;padding:8px 16px">删除</button>
             <button @click="openBatchScopeModal" class="codex-btn" style="font-size:0.8rem;padding:8px 16px">作用域</button>
+            <button @click="batchSetFavorite(true)" class="codex-btn" style="font-size:0.8rem;padding:8px 16px">
+              <svg style="width:14px;height:14px" fill="currentColor" viewBox="0 0 24 24">
+                <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/>
+              </svg>
+              收藏
+            </button>
+            <button @click="batchSetFavorite(false)" class="codex-btn" style="font-size:0.8rem;padding:8px 16px">
+              取消收藏
+            </button>
             <div style="width:1px;height:24px;background:var(--gold-dark)"></div>
             <button @click="toggleBatchMode" class="codex-btn icon-btn" style="width:32px;height:32px">
                 <svg style="width:16px;height:16px" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -799,8 +886,18 @@ createApp({
         const selectedCategory = ref('');
         const sortBy = ref('newest');
         const currentPage = ref(1);
-        const pageSize = ref(30);
+        const pageSize = ref(24);
         const total = ref(0);
+
+        const updatePageSize = () => {
+          const w = window.innerWidth;
+          if (w < 380) pageSize.value = 12;
+          else if (w < 768) pageSize.value = 16;
+          else if (w < 1200) pageSize.value = 20;
+          else pageSize.value = 24;
+        };
+
+        const thumbnailCache = createLRUCache(50);
 
         const previewOpen = ref(false);
         const previewItem = ref(null);
@@ -923,11 +1020,15 @@ createApp({
         const originalDataUrls = reactive({});
 
         const loadImageData = async (hash) => {
-            if (!hash || imageDataUrls[hash]) return;
+            if (!hash) return;
+            const cached = thumbnailCache.get(hash);
+            if (cached) { imageDataUrls[hash] = cached; return; }
+            if (imageDataUrls[hash]) return;
             try {
                 const data = await bridge.apiGet('thumbnail', { hash, size: 300 });
                 if (data && data.url) {
                     imageDataUrls[hash] = data.url;
+                    thumbnailCache.set(hash, data.url);
                 }
             } catch (e) {
                 console.error('Failed to load thumbnail:', hash, e);
@@ -1042,6 +1143,15 @@ createApp({
             }
         };
 
+        const healthStatus = ref('unknown');
+        const checkHealth = async () => {
+            const start = performance.now();
+            try {
+                const res = await apiFetch('api/health');
+                healthStatus.value = (performance.now() - start) < 200 ? 'ok' : 'slow';
+            } catch (e) { healthStatus.value = 'error'; }
+        };
+
         const fetchImages = async (page = 1) => {
             loading.value = true;
             try {
@@ -1049,9 +1159,12 @@ createApp({
                     page: page.toString(),
                     size: pageSize.value.toString(),
                     q: searchQuery.value,
-                    category: selectedCategory.value,
+                    category: selectedCategory.value === '__favorite__' ? '' : selectedCategory.value,
                     sort: sortBy.value,
                 });
+                if (selectedCategory.value === '__favorite__') {
+                    params.set('favorite_only', 'true');
+                }
                 const res = await apiFetch('api/images?' + params.toString());
                 const data = await res.json();
                 const nextImages = data.images || [];
@@ -1066,6 +1179,7 @@ createApp({
                 images.value = nextImages;
                 total.value = nextTotal;
                 categories.value = data.categories || [];
+                favoriteCount.value = Number(data.favorite_count || 0);
                 nextTick(() => observeImages());
                 if (selectedImages.value.size > 0) {
                     const visibleHashes = new Set(nextImages.map((img) => img.hash));
@@ -1359,6 +1473,46 @@ createApp({
             } catch (e) {
                 showAlert('操作失败: ' + e.message);
             }
+        };
+
+        const favoriteCount = ref(0);
+
+        const toggleFavorite = async (img) => {
+            if (!img?.hash) return;
+            const newValue = !img.is_favorite;
+            try {
+                const res = await apiFetch('api/images/update', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ hash: img.hash, is_favorite: newValue }),
+                });
+                const data = await res.json();
+                if (data.success) {
+                    img.is_favorite = newValue;
+                    favoriteCount.value += newValue ? 1 : -1;
+                    if (selectedCategory.value === '__favorite__' && !newValue) {
+                        await fetchImages(currentPage.value);
+                    }
+                } else { showAlert(data.error || '操作失败'); }
+            } catch (e) { showAlert('收藏操作失败: ' + e.message); }
+        };
+
+        const batchSetFavorite = async (favorite) => {
+            if (selectedImages.value.size === 0) return;
+            try {
+                const res = await apiFetch('api/images/batch-favorite', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ hashes: Array.from(selectedImages.value), favorite }),
+                });
+                const data = await res.json();
+                if (data.success) {
+                    selectedImages.value.clear();
+                    isBatchMode.value = false;
+                    await fetchImages(currentPage.value);
+                    showAlert(`已${favorite ? '收藏' : '取消收藏'} ${data.count || 0} 张图片`);
+                } else { showAlert(data.error || '批量操作失败'); }
+            } catch (e) { showAlert('批量操作失败: ' + e.message); }
         };
 
         const openUploadModal = () => {
@@ -1758,7 +1912,9 @@ createApp({
 
         onMounted(() => {
             initTheme();
+            updatePageSize();
             window.addEventListener('keydown', handleKeydown);
+            window.addEventListener('resize', () => { updatePageSize(); fetchImages(1); });
             imgObserver = new IntersectionObserver((entries) => {
                 entries.forEach((entry) => {
                     if (entry.isIntersecting) {
@@ -1768,6 +1924,7 @@ createApp({
                     }
                 });
             }, { rootMargin: '200px' });
+            checkHealth();
             loadAll();
         });
 
@@ -1875,6 +2032,12 @@ createApp({
             imageDataUrls,
             originalDataUrls,
             downloadImage,
+
+            favoriteCount,
+            toggleFavorite,
+            batchSetFavorite,
+            healthStatus,
+            hashToColor,
 
             confirmOpen,
             confirmMessage,

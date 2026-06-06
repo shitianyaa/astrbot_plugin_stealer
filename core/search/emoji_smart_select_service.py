@@ -150,6 +150,7 @@ class EmojiSmartSelectService:
                 category_bonus = 0.12 if entry_category == category else 0.04
                 use_count_bonus = min(0.08, int(data.get("use_count", 0) or 0) * 0.01)
                 bm25_bonus = fast_score * self.SMART_BM25_BONUS_WEIGHT
+                favorite_bonus = 0.3 if data.get("is_favorite") else 0.0
                 base_score = (
                     desc_score * 0.35
                     + tag_score * 0.25
@@ -157,6 +158,7 @@ class EmojiSmartSelectService:
                     + category_bonus
                     + use_count_bonus
                     + bm25_bonus
+                    + favorite_bonus
                 )
 
                 if base_score < 0.15:

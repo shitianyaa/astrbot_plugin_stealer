@@ -351,7 +351,7 @@ class EmojiSelector:
         event: AstrMessageEvent | None = None,
     ) -> str | None:
         try:
-            files: list[Path] = []
+            entries: list[tuple[Path, dict]] = []
             idx = self._get_index()
             for file_path, data in idx.items():
                 if not isinstance(data, dict):
@@ -362,9 +362,9 @@ class EmojiSelector:
                     continue
                 path_obj = Path(file_path)
                 if path_obj.is_file():
-                    files.append(path_obj)
+                    entries.append((path_obj, data))
 
-            if not files:
+            if not entries:
                 # 带事件上下文时必须依赖索引元数据判断作用域，避免在索引缺项、
                 # 缓存未初始化或重建中断时通过目录兜底误发 local 表情。
                 if event is not None:
@@ -378,32 +378,48 @@ class EmojiSelector:
                 cat_dir = Path(categories_dir) / category
                 if not cat_dir.exists():
                     return None
-                files = []
+                entries = []
                 for path_obj in cat_dir.iterdir():
                     if not path_obj.is_file():
                         continue
                     if not self.is_path_allowed_for_event(str(path_obj), event):
                         continue
-                    files.append(path_obj)
+                    entries.append((path_obj, {}))
 
-            if not files:
+            if not entries:
                 return None
 
             recent_usage = self._get_recent_usage(category)
             recent_set = set(recent_usage)
-            candidates = [(p, self._canon_path(str(p))) for p in files]
+            candidates = [(p, self._canon_path(str(p)), data) for p, data in entries]
 
             # 过滤最近使用
-            available = [p for p, canon in candidates if canon not in recent_set]
+            available = [(p, data) for p, canon, data in candidates if canon not in recent_set]
             if not available:
-                available = [p for p, _ in candidates]
+                available = [(p, data) for p, _, data in candidates]
                 recent_usage = []
                 recent_set = set()
+
+            # 加权随机选择：收藏项权重 ×3
+            weights = [3.0 if data.get("is_favorite") else 1.0 for _, data in available]
+            total_weight = sum(weights)
 
             # 尝试选择一个存在的文件（最多重试3次）
             max_retries = min(3, len(available))
             for _ in range(max_retries):
-                picked = random.choice(available)
+                r = random.uniform(0, total_weight)
+                cumulative = 0.0
+                picked = None
+                picked_weight = 0.0
+                for (path_obj, data), weight in zip(available, weights):
+                    cumulative += weight
+                    if r <= cumulative:
+                        picked = path_obj
+                        picked_weight = weight
+                        break
+                if picked is None:
+                    picked, picked_weight = available[-1][0], weights[-1]
+
                 # 检查文件是否仍然存在
                 if picked.exists():
                     picked_path = self._canon_path(str(picked))
@@ -413,7 +429,7 @@ class EmojiSelector:
                     recent_usage.append(picked_path)
 
                     max_recent = min(
-                        self.MAX_RECENT_USAGE, max(self.MIN_RECENT_USAGE, len(files) // 2)
+                        self.MAX_RECENT_USAGE, max(self.MIN_RECENT_USAGE, len(entries) // 2)
                     )
                     if len(recent_usage) > max_recent:
                         recent_usage = recent_usage[-max_recent:]
@@ -422,7 +438,12 @@ class EmojiSelector:
                     return str(picked)
                 else:
                     # 文件已不存在，从候选列表中移除
-                    available.remove(picked)
+                    idx_to_remove = next(
+                        i for i, (p, _) in enumerate(available) if p == picked
+                    )
+                    available.pop(idx_to_remove)
+                    weights.pop(idx_to_remove)
+                    total_weight -= picked_weight
                     if not available:
                         break
 
