@@ -44,6 +44,7 @@ class PluginAPI:
             ("/images/batch-delete", "handle_batch_delete", ["POST"]),
             ("/images/batch-move", "handle_batch_move", ["POST"]),
             ("/images/batch-scope", "handle_batch_scope", ["POST"]),
+            ("/images/batch-favorite", "handle_batch_favorite", ["POST"]),
             ("/images/batch-upload", "handle_batch_upload", ["POST"]),
             ("/images/batch-upload-status", "handle_batch_upload_status", ["GET"]),
             ("/analyze", "handle_analyze_image", ["POST"]),
@@ -203,6 +204,9 @@ class PluginAPI:
                 "scope_mode": self._norm_scope(meta.get("scope_mode")),
                 "origin_target": str(meta.get("origin_target", "") or ""),
                 "created_at": meta.get("created_at", 0),
+                "is_favorite": bool(meta.get("is_favorite", 0)),
+                "use_count": meta.get("use_count", 0) or 0,
+                "last_used_at": meta.get("last_used_at", 0) or 0,
             }
         except ValueError:
             return None
@@ -335,6 +339,7 @@ class PluginAPI:
             cat_filter = request.args.get("category", None)
             search = str(request.args.get("q", "")).lower()
             sort_order = request.args.get("sort", "newest")
+            favorite_only = request.args.get("favorite_only", "false").lower() == "true"
 
             db = self._db
             get_paginated = getattr(db, "get_emojis_paginated", None) if db else None
@@ -346,6 +351,7 @@ class PluginAPI:
                     category=cat_filter,
                     sort_order=sort_order,
                     search_query=search if search else None,
+                    favorite_only=favorite_only,
                 )
                 images = [
                     item for item in (self._build_image_item(i["path"], i) for i in raw) if item
@@ -381,6 +387,8 @@ class PluginAPI:
                 cat = item["category"]
                 cat_counts[cat] = cat_counts.get(cat, 0) + 1
                 if cat_filter and item["category"] != cat_filter:
+                    continue
+                if favorite_only and not item.get("is_favorite"):
                     continue
                 images.append(item)
 
@@ -466,6 +474,7 @@ class PluginAPI:
             new_desc = data.get("desc")
             new_scenes = data.get("scenes", data.get("scene"))
             new_scope = self._norm_scope(data.get("scope_mode"))
+            new_favorite = data.get("is_favorite")
             updated = {"ok": False, "error": ""}
 
             async def updater(current: dict):
@@ -491,6 +500,8 @@ class PluginAPI:
                         updated["error"] = "Origin target missing"
                         return
                     meta["scope_mode"] = new_scope
+                if new_favorite is not None:
+                    meta["is_favorite"] = 1 if new_favorite else 0
                 if new_cat and new_cat != meta.get("category"):
                     old_path = Path(target)
                     if not old_path.exists():
@@ -645,6 +656,30 @@ class PluginAPI:
             return jsonify({"success": True, "count": updated, "skipped": skipped})
         except Exception as e:
             logger.error(f"批量作用域更新失败: {e}", exc_info=True)
+            return jsonify({"success": False, "error": str(e)})
+
+    async def handle_batch_favorite(self):
+        try:
+            data = await request.get_json() or {}
+            hashes = set(data.get("hashes", []))
+            favorite = bool(data.get("favorite", True))
+            if not hashes:
+                return jsonify({"success": True, "count": 0})
+            updated = 0
+
+            async def updater(current: dict):
+                nonlocal updated
+                for _, m in current.items():
+                    if not isinstance(m, dict) or m.get("hash") not in hashes:
+                        continue
+                    m["is_favorite"] = 1 if favorite else 0
+                    updated += 1
+
+            await self._update_index(updater)
+            await self._sync_index()
+            return jsonify({"success": True, "count": updated})
+        except Exception as e:
+            logger.error(f"批量收藏失败: {e}", exc_info=True)
             return jsonify({"success": False, "error": str(e)})
 
     async def handle_batch_upload(self):
