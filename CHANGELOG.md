@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.11] - 2026-06-15
+
+### fix
+- 修复 GIF 动图拼接后超出 VLM 输入限制(2048x2048)导致分类失败 (#72)：拼接图超限时自动 LANCZOS 等比缩放至限制内
+- 修复 `zh-CN.json` 键名 `auto_send` 使用中文引号导致 JSON 解析失败 (#74)
+- 修复 `README_EN.md` 两处中文书名号 `「」` 改为英文引号
+
+### improved
+- 智能选图预筛选优化：模糊候选初筛改用更轻量的 n-gram Jaccard（`calculate_simple_similarity`），减少昂贵策略融合计算
+- 智能选图打分循环添加提前终止：≥5 个最终评分 f≥0.7 的高分候选时跳过剩余条目，避免全量遍历
+
 ## [2.6.10] - 2026-06-12
 
 ### improved
