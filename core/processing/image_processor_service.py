@@ -343,6 +343,89 @@ class ImageProcessorService:
         idx[cat_path] = entry
         return True, idx
 
+    async def _store_to_pending(
+        self,
+        file_path: str,
+        is_temp: bool,
+        category: str,
+        hash_val: str,
+        extra_meta: dict[str, Any] | None = None,
+        tags: list[str] | None = None,
+        desc: str = "",
+        scenes: list[str] | None = None,
+        already_in_raw: bool = False,
+        phash_val: str = "",
+    ) -> tuple[bool, dict[str, Any] | None]:
+        """将偷取的图片落点到待审核池（pending 目录 + emoji_pending 表）。
+
+        不写 emoji/tag/scene/embedding；不参与发送与检索。
+        原子写入：文件落盘成功 → 写 DB；DB 失败 → 删除已落盘 pending 文件。
+
+        Returns:
+            (True, None) 成功落 pending（idx 为 None，上层跳过索引合并与 _save_index）；
+            (False, None) 失败。
+        """
+        if not hash_val or not os.path.exists(file_path):
+            logger.warning(f"pending: 源文件缺失或无哈希: {file_path}")
+            return False, None
+
+        pending_dir = self.plugin_config.ensure_pending_dir()
+        if not pending_dir:
+            logger.warning("pending: 无法创建 pending 目录")
+            return False, None
+
+        base_path = Path(file_path)
+        ext = base_path.suffix.lower() if base_path.suffix else ".jpg"
+        pending_filename = f"{int(time.time())}_{hash_val[:8]}{ext}"
+        pending_path = str(pending_dir / pending_filename)
+
+        try:
+            # 源文件统一 move 到 pending：temp（cache 命中/on_message）或 raw（主分支）均是中间文件
+            if os.path.abspath(file_path) != os.path.abspath(pending_path):
+                await asyncio.to_thread(shutil.move, file_path, pending_path)
+        except Exception as e:
+            logger.error(f"pending: 移动文件到 pending 失败: {file_path} -> {pending_path}, {e}")
+            return False, None
+
+        if not os.path.exists(pending_path):
+            logger.warning(f"pending: 落盘后文件不存在: {pending_path}")
+            return False, None
+
+        meta: dict[str, Any] = {
+            "path": pending_path,
+            "hash": hash_val,
+            "phash": phash_val or None,
+            "category": category,
+            "desc": desc or None,
+            "tags": tags or [],
+            "scenes": scenes or [],
+        }
+        if extra_meta and isinstance(extra_meta, dict):
+            for k, v in extra_meta.items():
+                if k in {"path", "hash", "phash", "category", "desc", "tags", "scenes"}:
+                    continue
+                meta[k] = v
+            if "scope_mode" not in extra_meta:
+                meta.setdefault("scope_mode", "public")
+
+        try:
+            pending_id = await self.plugin.db_service.insert_pending(meta)
+        except Exception as e:
+            logger.error(f"pending: 写 emoji_pending 失败，回滚删除 pending 文件: {e}")
+            await self.plugin._safe_remove_file(pending_path)
+            return False, None
+
+        if pending_id is None:
+            # 同 path 已在 pending（UNIQUE 冲突）：删除本次落盘的多余文件，保持池内唯一
+            logger.debug(f"pending: 已存在同路径记录，移除重复文件: {pending_path}")
+            await self.plugin._safe_remove_file(pending_path)
+            return False, None
+
+        logger.info(
+            f"pending: 已存入待审核池 id={pending_id} cat={category} hash={hash_val[:16]}"
+        )
+        return True, None
+
     async def process_image(
         self,
         event: AstrMessageEvent | None,
@@ -353,6 +436,7 @@ class ImageProcessorService:
         content_filtration: bool | None = None,
         is_platform_emoji: bool = False,
         extra_meta: dict[str, Any] | None = None,
+        to_pending: bool = False,
     ) -> tuple[bool, dict[str, Any] | None]:
         """统一处理图片：存储、分类、过滤。
 
@@ -364,6 +448,9 @@ class ImageProcessorService:
             categories: 分类列表
             content_filtration: 是否进行内容过滤
             is_platform_emoji: 是否为平台标记的表情包
+            to_pending: 落点为待审核池（on_message 自动偷取专用）。
+                为 True 时分类有效后写入 pending 目录与 emoji_pending 表，
+                不写 emoji/tag/scene/embedding；force_capture/工具/WebUI 不传此参数。
 
         Returns:
             tuple: (是否成功, 图片索引)
@@ -419,6 +506,7 @@ class ImageProcessorService:
                         extra_meta=extra_meta,
                         from_cache=True,
                         phash_val=phash_val,
+                        to_pending=to_pending,
                     )
 
             # 4. 存入 raw 目录（锁外）
@@ -451,6 +539,7 @@ class ImageProcessorService:
                     from_cache=False,
                     already_in_raw=True,
                     phash_val=phash_val,
+                    to_pending=to_pending,
                 )
 
         except Exception as e:
@@ -605,6 +694,7 @@ class ImageProcessorService:
         from_cache: bool = False,
         already_in_raw: bool = False,
         phash_val: str = "",
+        to_pending: bool = False,
     ) -> tuple[bool, dict[str, Any] | None]:
         """根据分类结果决定存储、跳过或清理。"""
         source = "缓存" if from_cache else "VLM"
@@ -630,6 +720,19 @@ class ImageProcessorService:
         # 有效分类
         if category and category in self.categories:
             logger.debug(f"分类有效（{source}）: {category}")
+            if to_pending:
+                return await self._store_to_pending(
+                    file_path,
+                    is_temp,
+                    category,
+                    hash_val,
+                    extra_meta=extra_meta,
+                    tags=tags,
+                    desc=desc,
+                    scenes=scenes,
+                    already_in_raw=already_in_raw,
+                    phash_val=phash_val,
+                )
             return await self._store_and_index_image(
                 file_path,
                 is_temp,

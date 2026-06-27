@@ -367,38 +367,19 @@ class EventHandler:
         return len(expired_keys)
 
     def _get_force_capture_sender_id(self, event) -> str | None:
-        """获取发送者ID。
+        """获取发送者ID。"""
+        try:
+            sid = event.get_sender_id()
+            if sid:
+                return str(sid)
+        except Exception:
+            pass
 
-        Args:
-            event: 消息事件对象
-
-        Returns:
-            str | None: 发送者ID
-        """
-        # 优先使用框架官方 API
-        if hasattr(event, "get_sender_id"):
-            try:
-                sid = event.get_sender_id()
-                if sid:
-                    return str(sid)
-            except Exception:
-                pass
-
-        # 兜底：防御性遍历属性
-        for attr in ("sender_id", "user_id"):
-            value = getattr(event, attr, None)
-            if value:
-                return str(value)
-
+        # 单层兜底：从 message_obj.sender 取 user_id
         message_obj = getattr(event, "message_obj", None)
-        if message_obj is not None:
-            sender = getattr(message_obj, "sender", None)
-            if sender is not None:
-                uid = getattr(sender, "user_id", None)
-                if uid:
-                    return str(uid)
-
-        return None
+        sender = getattr(message_obj, "sender", None) if message_obj is not None else None
+        uid = getattr(sender, "user_id", None) if sender is not None else None
+        return str(uid) if uid else None
 
     def begin_force_capture(self, event, seconds: int) -> None:
         """开始强制捕获窗口。
@@ -487,6 +468,18 @@ class EventHandler:
             await self._handle_force_capture(event, plugin_instance, imgs, store_urls)
             return
         if not self._should_process_image():
+            return
+        # 待审核池容量护栏：池满则暂停自动偷取（不下载、不处理、不删库内文件），
+        # 审核通过/删除使 pending 减少后下条消息自然恢复。
+        try:
+            pending_count = plugin_instance.db_service.count_pending()
+        except (AttributeError, TypeError):
+            pending_count = 0
+        capacity = getattr(plugin_instance, "steal_pool_capacity", 200)
+        if pending_count >= capacity:
+            logger.debug(
+                f"[steal] 待审核池已满 {pending_count}/{capacity}，暂停偷取，审核后自动恢复"
+            )
             return
         logger.debug(f"开始处理 {len(imgs)} 个表情")
         raw_image_segments: list[dict] = []
@@ -583,10 +576,8 @@ class EventHandler:
                 if isinstance(result, Exception):
                     logger.error(f"下载图片异常: {result}")
                     continue
-                if isinstance(result, tuple):
-                    temp_path, _is_gif = result
-                else:
-                    temp_path = result
+                # _download_original_image 固定返回二元组 (temp_path, is_gif)
+                temp_path, _is_gif = result
                 if not temp_path or not Path(temp_path).exists():
                     logger.warning(f"临时文件不存在: {temp_path}")
                     continue
@@ -597,6 +588,7 @@ class EventHandler:
                         is_temp=True,
                         is_platform_emoji=True,
                         extra_meta=extra_meta,
+                        to_pending=True,
                     )
                 )
             if process_tasks:
@@ -642,6 +634,7 @@ class EventHandler:
                         is_temp=True,
                         is_platform_emoji=True,
                         extra_meta=extra_meta,
+                        to_pending=True,
                     )
                 )
             if store_process_tasks:
@@ -671,18 +664,14 @@ class EventHandler:
             if imgs:
                 img = imgs[0]
                 result = await self._download_original_image(img)
-                if isinstance(result, tuple):
-                    temp_path, is_gif = result
-                else:
-                    temp_path = result
+                # _download_original_image 固定返回二元组 (temp_path, is_gif)
+                temp_path, is_gif = result
                 if not temp_path:
                     temp_path = await img.convert_to_file_path()
             elif store_urls:
                 result = await self._download_url_to_temp(store_urls[0])
-                if isinstance(result, tuple):
-                    temp_path, is_gif = result
-                else:
-                    temp_path = result
+                # _download_url_to_temp 固定返回二元组 (temp_path, is_gif)
+                temp_path, is_gif = result
 
             if not temp_path or not Path(temp_path).exists():
                 await event.send(MessageChain([Plain(text="❌ 收录失败：图片临时文件不存在")]))

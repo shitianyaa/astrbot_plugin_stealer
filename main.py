@@ -1034,6 +1034,7 @@ class Main(Star):
         idx: dict[str, Any] | None = None,
         is_platform_emoji: bool = False,
         extra_meta: dict[str, Any] | None = None,
+        to_pending: bool = False,
     ) -> tuple[bool, dict[str, Any] | None]:
         """统一处理图片的方法，包括过滤、分类、存储和索引更新。"""
         try:
@@ -1047,10 +1048,11 @@ class Main(Star):
                     content_filtration=self.content_filtration,
                     is_platform_emoji=is_platform_emoji,
                     extra_meta=extra_meta,
+                    to_pending=to_pending,
                 ),
                 timeout=self.IMAGE_PROCESSING_TIMEOUT_SECONDS,
             )
-            if idx is None and updated_idx is not None:
+            if idx is None and updated_idx is not None and not to_pending:
                 full_idx = await self._load_index()
                 full_idx.update(updated_idx)
                 return success, full_idx

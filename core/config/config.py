@@ -210,6 +210,7 @@ class PluginConfig(BaseModel):
         object.__setattr__(self, "raw_dir", data_dir / "raw")
         object.__setattr__(self, "categories_dir", data_dir / "categories")
         object.__setattr__(self, "cache_dir", data_dir / "cache")
+        object.__setattr__(self, "pending_dir", data_dir / "pending")
         object.__setattr__(self, "category_info_path", data_dir / "category_info.json")
 
         # 确保目录存在
@@ -401,11 +402,17 @@ class PluginConfig(BaseModel):
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         return self.cache_dir
 
+    def ensure_pending_dir(self) -> Path:
+        """确保待审核池目录存在，并返回其路径。"""
+        self.pending_dir.mkdir(parents=True, exist_ok=True)
+        return self.pending_dir
+
     def ensure_base_dirs(self) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.raw_dir.mkdir(parents=True, exist_ok=True)
         self.categories_dir.mkdir(parents=True, exist_ok=True)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self.pending_dir.mkdir(parents=True, exist_ok=True)
 
     def normalize_category_strict(self, category: str) -> str | None:
         """严格归一化情绪分类。"""
