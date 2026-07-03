@@ -1072,7 +1072,8 @@ createApp({
 
         const openBatchUploadModal = () => {
             batchUploadOpen.value = true;
-            clearBatchFiles();
+            batchFiles.value = [];
+            batchPreviews.value = [];
             batchUploadError.value = null;
             batchDragActive.value = false;
             batchTaskId.value = null;
@@ -1086,7 +1087,6 @@ createApp({
 
         const closeBatchUploadModal = () => {
             batchUploadOpen.value = false;
-            clearBatchFiles();
             batchDragActive.value = false;
             if (batchPollInterval) {
                 clearInterval(batchPollInterval);
@@ -1098,19 +1098,9 @@ createApp({
             if (inputEl) inputEl.value = '';
         };
 
-        const imageFileExtensions = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp']);
-
-        const isImageFile = (file) => {
-            if (!file) return false;
-
-            const mimeType = String(file.type || '').toLowerCase();
-            if (mimeType.startsWith('image/')) return true;
-
-            const fileName = String(file.name || '').toLowerCase();
-            return Array.from(imageFileExtensions).some((ext) => fileName.endsWith(ext));
-        };
-
-        const normalizeImageFiles = (fileList) => Array.from(fileList || []).filter(isImageFile);
+        const normalizeImageFiles = (fileList) => Array.from(fileList || []).filter((file) =>
+            file && String(file.type || '').startsWith('image/')
+        );
 
         const setBatchFiles = (files) => {
             batchPreviews.value.forEach((url) => URL.revokeObjectURL(url));
