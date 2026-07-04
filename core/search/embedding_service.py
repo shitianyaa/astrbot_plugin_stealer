@@ -30,6 +30,7 @@ class EmbeddingService:
         self.plugin = plugin
         self._provider: Any | None = None
         self._provider_dim: int = 0
+        self._provider_lookup_attempted: bool = False
 
         # FaissVecDB
         self._faiss_db: Any | None = None
@@ -49,6 +50,12 @@ class EmbeddingService:
         """获取 EmbeddingProvider（优先配置 ID，留空取首个）。"""
         if self._provider is not None:
             return self._provider
+        if not self._is_enabled():
+            return None
+        if self._provider_lookup_attempted:
+            return None
+
+        self._provider_lookup_attempted = True
 
         provider_id = getattr(self.plugin, "embedding_provider_id", None) or ""
 
@@ -64,6 +71,7 @@ class EmbeddingService:
                 else:
                     self._provider = provider
                     self._provider_dim = self._get_provider_dim(provider)
+                    self._provider_lookup_attempted = False
                     logger.info(
                         f"[Embedding] 使用指定 Provider: {provider_id} (dim={self._provider_dim})"
                     )
@@ -78,6 +86,7 @@ class EmbeddingService:
         if providers:
             self._provider = providers[0]
             self._provider_dim = self._get_provider_dim(self._provider)
+            self._provider_lookup_attempted = False
             pid = self._extract_provider_id(self._provider)
             logger.info(f"[Embedding] 自动选择首个 Provider: {pid} (dim={self._provider_dim})")
             return self._provider
@@ -140,7 +149,7 @@ class EmbeddingService:
 
     def is_available(self) -> bool:
         """嵌入检索是否可用。"""
-        if not getattr(self.plugin, "enable_embedding_search", True):
+        if not self._is_enabled():
             return False
 
         if self._init_faiss():
@@ -148,6 +157,10 @@ class EmbeddingService:
         if self._init_fallback():
             return True
         return False
+
+    def _is_enabled(self) -> bool:
+        """配置是否启用嵌入检索。"""
+        return bool(getattr(self.plugin, "enable_embedding_search", True))
 
     # ═══════════════════════════════════════════════════
     #  FaissVecDB（对齐 livingmemory _complete_initialization）
@@ -298,6 +311,9 @@ class EmbeddingService:
 
     async def initialize(self) -> None:
         """异步初始化（对齐 livingmemory 的 initialize 流程）。"""
+        if not self._is_enabled():
+            return
+
         # 1. Provider 就绪检查
         provider = self._get_provider()
         if provider is None:
@@ -348,6 +364,9 @@ class EmbeddingService:
 
         失败不阻塞入库流程。
         """
+        if not self._is_enabled():
+            return False
+
         text = self._build_search_text(entry)
         if not text:
             return False
@@ -428,6 +447,8 @@ class EmbeddingService:
         Returns:
             [(path, similarity_score), ...]  按相似度降序
         """
+        if not self.is_available():
+            return []
         if not query or not query.strip():
             return []
 
@@ -540,6 +561,15 @@ class EmbeddingService:
         self._fallback_matrix = None
         self._fallback_paths = []
 
+    def reset_provider_state(self) -> None:
+        """配置变更后允许重新探测 Provider。"""
+        self._provider = None
+        self._provider_dim = 0
+        self._provider_lookup_attempted = False
+        self._faiss_db = None
+        self._faiss_available = None
+        self.invalidate_cache()
+
     # ═══════════════════════════════════════════════════
     #  回填（对齐 livingmemory 的批量重建模式）
     # ═══════════════════════════════════════════════════
@@ -550,11 +580,18 @@ class EmbeddingService:
         对齐 livingmemory index_rebuild 的批量处理模式。
         关键：回填到当前活跃的存储后端（FaissVecDB 或 SQLite），不混用。
         """
+        if not self._is_enabled():
+            return 0
+
         if batch_size is None:
             batch_size = self.BACKFILL_BATCH_SIZE
 
         db = getattr(self.plugin, "db_service", None)
         if not db:
+            return 0
+
+        if not self.is_available():
+            logger.debug("[Embedding] 回填跳过：嵌入检索不可用")
             return 0
 
         # 获取所有 emoji 路径

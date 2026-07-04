@@ -404,9 +404,23 @@ class Main(Star):
             return
         try:
             if self.plugin_config:
+                embedding_config_changed = bool(
+                    {"enable_embedding_search", "embedding_provider_id"} & set(config_dict)
+                )
                 self._apply_plugin_config_updates(config_dict)
                 self._sync_all_config()
                 self._sync_image_processor_from_runtime()
+                if embedding_config_changed:
+                    try:
+                        smart_service = getattr(self.emoji_selector, "_smart_select_service", None)
+                        embedding_service = (
+                            getattr(smart_service, "_embedding_service", None)
+                            if smart_service else None
+                        )
+                        if embedding_service and hasattr(embedding_service, "reset_provider_state"):
+                            embedding_service.reset_provider_state()
+                    except Exception as e:
+                        logger.debug(f"[Embedding] 重置 Provider 状态失败: {e}")
                 try:
                     self.plugin_config.ensure_category_dirs(self.categories)
                 except Exception as e:
@@ -1267,7 +1281,11 @@ class Main(Star):
             # 初始化嵌入向量服务 + 回填旧数据
             try:
                 smart_service = getattr(self.emoji_selector, "_smart_select_service", None)
-                if smart_service and smart_service._embedding_service:
+                if (
+                    self.enable_embedding_search
+                    and smart_service
+                    and smart_service._embedding_service
+                ):
                     await smart_service._embedding_service.initialize()
                     # 同步回填旧数据（分批处理，每批 20 条）
                     backfilled = await smart_service._embedding_service.backfill_existing(batch_size=20)
